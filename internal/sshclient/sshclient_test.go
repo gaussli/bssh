@@ -9,9 +9,12 @@ import (
 	"testing"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/gaussli/bssh/internal/hosts"
 )
 
-func TestRunReusesConnection(t *testing.T) {
+func newTestSSHServer(t *testing.T) (string, int, *atomic.Int32) {
+	t.Helper()
 	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -32,9 +35,7 @@ func TestRunReusesConnection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
-
-	var accepts atomic.Int32
+	accepts := new(atomic.Int32)
 	go func() {
 		for {
 			conn, err := listener.Accept()
@@ -45,6 +46,7 @@ func TestRunReusesConnection(t *testing.T) {
 			go serveTestSSH(conn, serverConfig)
 		}
 	}()
+	t.Cleanup(func() { _ = listener.Close() })
 
 	host, portText, err := net.SplitHostPort(listener.Addr().String())
 	if err != nil {
@@ -54,12 +56,20 @@ func TestRunReusesConnection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	return host, port, accepts
+}
 
-	client := &Client{
+func newTestClient() *Client {
+	return &Client{
 		auth:            ssh.Password("secret"),
 		hostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		conns:           make(map[string]*ssh.Client),
 	}
+}
+
+func TestRunReusesConnection(t *testing.T) {
+	host, port, accepts := newTestSSHServer(t)
+	client := newTestClient()
 	defer client.Close()
 
 	for _, command := range []string{"first", "second", "third"} {
@@ -78,6 +88,50 @@ func TestRunReusesConnection(t *testing.T) {
 	client.Close()
 	if len(client.conns) != 0 {
 		t.Fatalf("Close left %d cached connections", len(client.conns))
+	}
+}
+
+func TestConnectPrewarmsConnections(t *testing.T) {
+	host1, port1, accepts1 := newTestSSHServer(t)
+	host2, port2, accepts2 := newTestSSHServer(t)
+
+	targets := []hosts.Target{
+		{User: "tester", Host: host1, Port: port1},
+		{User: "tester", Host: host2, Port: port2},
+	}
+	client := newTestClient()
+	defer client.Close()
+
+	done := 0
+	errs := client.Connect(targets, func(_ int, _ error) {
+		done++
+	})
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("connect targets[%d]: %v", i, err)
+		}
+	}
+	if done != len(targets) {
+		t.Fatalf("onDone called %d times, want %d", done, len(targets))
+	}
+	if len(client.conns) != len(targets) {
+		t.Fatalf("cached %d connections, want %d", len(client.conns), len(targets))
+	}
+	if accepts1.Load() != 1 || accepts2.Load() != 1 {
+		t.Fatalf("Connect opened %d/%d connections, want 1/1", accepts1.Load(), accepts2.Load())
+	}
+
+	for _, target := range targets {
+		out, err := client.Run(target.User, target.Host, target.Port, "hostname")
+		if err != nil {
+			t.Fatalf("run on %s: %v", target, err)
+		}
+		if out != "hostname" {
+			t.Fatalf("run on %s returned %q", target, out)
+		}
+	}
+	if accepts1.Load() != 1 || accepts2.Load() != 1 {
+		t.Fatalf("commands opened new connections (%d/%d)", accepts1.Load(), accepts2.Load())
 	}
 }
 

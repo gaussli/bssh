@@ -13,12 +13,15 @@ import (
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/knownhosts"
+
+	"github.com/gaussli/bssh/internal/hosts"
 )
 
 const connectTimeout = 10 * time.Second
 
 // Client holds the resolved auth method, host key policy and cached connections.
-// It is not safe for concurrent use; commands are executed serially.
+// It is not safe for concurrent use; commands are executed serially. Connect
+// dials concurrently but caches the results before it returns.
 type Client struct {
 	auth            ssh.AuthMethod
 	hostKeyCallback ssh.HostKeyCallback
@@ -50,12 +53,64 @@ func (c *Client) Close() {
 	}
 }
 
+// Connect dials every target concurrently and caches the established
+// connections before the first command is read, so users do not wait for SSH
+// handshakes after typing a command. onDone, when non-nil, is called serially
+// in completion order with the target index and its dial error. The returned
+// errors are aligned with targets; failed targets are simply not cached.
+func (c *Client) Connect(targets []hosts.Target, onDone func(index int, err error)) []error {
+	type dialResult struct {
+		index int
+		conn  *ssh.Client
+		err   error
+	}
+
+	results := make(chan dialResult, len(targets))
+	for i, target := range targets {
+		go func(i int, target hosts.Target) {
+			addr := net.JoinHostPort(target.Host, strconv.Itoa(target.Port))
+			conn, err := c.dial(target.User, addr)
+			results <- dialResult{index: i, conn: conn, err: err}
+		}(i, target)
+	}
+
+	errs := make([]error, len(targets))
+	conns := make([]*ssh.Client, len(targets))
+	for range targets {
+		result := <-results
+		errs[result.index] = result.err
+		conns[result.index] = result.conn
+		if onDone != nil {
+			onDone(result.index, result.err)
+		}
+	}
+
+	// Cache on the calling goroutine to keep Client single-goroutine semantics.
+	for i, target := range targets {
+		if conns[i] == nil {
+			continue
+		}
+		addr := net.JoinHostPort(target.Host, strconv.Itoa(target.Port))
+		key := cacheKey(target.User, addr)
+		if _, exists := c.conns[key]; exists {
+			_ = conns[i].Close()
+			continue
+		}
+		c.conns[key] = conns[i]
+	}
+	return errs
+}
+
+func cacheKey(user, addr string) string {
+	return user + "@" + addr
+}
+
 // Run executes command on one host over a cached connection and returns its
 // trimmed stdout. An ssh.Session is single-use, so a fresh session is opened
 // for each command while the underlying connection is reused.
 func (c *Client) Run(user, host string, port int, command string) (string, error) {
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
-	session, err := c.newSession(user, addr, user+"@"+addr)
+	session, err := c.newSession(user, addr, cacheKey(user, addr))
 	if err != nil {
 		return "", err
 	}

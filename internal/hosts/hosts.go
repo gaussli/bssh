@@ -30,7 +30,7 @@ type configFile struct {
 }
 
 type hostEntry struct {
-	Host string `yaml:"ip"`
+	Host string `yaml:"host"`
 	User string `yaml:"user"`
 	Port int    `yaml:"port"`
 }
@@ -38,8 +38,8 @@ type hostEntry struct {
 // ParseFile reads a YAML file such as:
 //
 //	hosts:
-//	  - ip: 192.168.1.1
-//	  - ip: 192.1.1.1
+//	  - host: 192.168.1.1
+//	  - host: 192.1.1.1
 //	    user: user1
 //	    port: 2222
 //
@@ -61,7 +61,7 @@ func ParseFile(path string) ([]Target, error) {
 	targets := make([]Target, 0, len(cfg.Hosts))
 	for i, h := range cfg.Hosts {
 		if h.Host == "" {
-			return nil, fmt.Errorf("%s: hosts[%d]: ip is required", path, i)
+			return nil, fmt.Errorf("%s: hosts[%d]: host is required", path, i)
 		}
 		port := h.Port
 		if port == 0 {

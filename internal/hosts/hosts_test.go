@@ -17,8 +17,8 @@ func writeHostsFile(t *testing.T, content string) string {
 
 func TestParseFile(t *testing.T) {
 	path := writeHostsFile(t, `hosts:
-- ip: 192.168.1.1
-- ip: 192.1.1.1
+- host: 192.168.1.1
+- host: 192.1.1.1
   port: 22
   user: user1
 `)
@@ -41,7 +41,7 @@ func TestParseFile(t *testing.T) {
 }
 
 func TestParseFileCustomPort(t *testing.T) {
-	path := writeHostsFile(t, "hosts:\n  - ip: 10.0.0.1\n    port: 2222\n")
+	path := writeHostsFile(t, "hosts:\n  - host: 10.0.0.1\n    port: 2222\n")
 	targets, err := ParseFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -53,9 +53,9 @@ func TestParseFileCustomPort(t *testing.T) {
 
 func TestParseFileRejectsInvalidInput(t *testing.T) {
 	cases := map[string]string{
-		"missing ip":    "hosts:\n- user: root\n",
-		"invalid port":  "hosts:\n- ip: 10.0.0.1\n  port: 70000\n",
-		"unknown field": "hosts:\n- ip: 10.0.0.1\n  prot: 22\n",
+		"missing host":  "hosts:\n- user: root\n",
+		"invalid port":  "hosts:\n- host: 10.0.0.1\n  port: 70000\n",
+		"unknown field": "hosts:\n- host: 10.0.0.1\n  prot: 22\n",
 		"old format":    "root@192.168.1.1\n",
 		"broken yaml":   "hosts: [\n",
 	}

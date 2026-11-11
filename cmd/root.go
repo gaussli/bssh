@@ -13,7 +13,10 @@ import (
 	"github.com/gaussli/bssh/internal/sshclient"
 )
 
-const exitCommand = "exit"
+const (
+	exitCommand   = "exit"
+	hostSeparator = "====="
+)
 
 type options struct {
 	file string
@@ -114,7 +117,8 @@ func connectHosts(client connector, targets []hosts.Target, out io.Writer) ([]ho
 }
 
 // readCommands reads one command per line and runs it on every ready host
-// serially, reusing cached SSH connections, until "exit" or EOF.
+// serially, reusing cached SSH connections, until "exit" or EOF. Each host's
+// output is a delimited block so multi-line results stay visually grouped.
 func readCommands(client runner, targets []hosts.Target, in io.Reader, out, errOut io.Writer) error {
 	scanner := bufio.NewScanner(in)
 	for scanner.Scan() {
@@ -126,14 +130,17 @@ func readCommands(client runner, targets []hosts.Target, in io.Reader, out, errO
 			continue
 		}
 		for _, target := range targets {
+			fmt.Fprintf(out, "%s %s %s\n", hostSeparator, target, hostSeparator)
 			result, err := client.Run(target.User, target.Host, target.Port, command)
 			if err != nil {
 				fmt.Fprintf(errOut, "%s\tERROR: %v\n", target, err)
+				fmt.Fprintln(out)
 				continue
 			}
 			for _, line := range strings.Split(result, "\n") {
 				fmt.Fprintf(out, "%s\t%s\n", target, line)
 			}
+			fmt.Fprintln(out)
 		}
 	}
 	return scanner.Err()

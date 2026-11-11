@@ -14,6 +14,8 @@ import (
 
 type fakeClient struct {
 	connectErrs []error
+	runResults  map[string]string
+	runErrs     map[string]error
 	events      *[]string
 }
 
@@ -28,8 +30,15 @@ func (f *fakeClient) Connect(_ []hosts.Target, onDone func(index int, err error)
 	return f.connectErrs
 }
 
-func (f *fakeClient) Run(_ string, _ string, _ int, command string) (string, error) {
+func (f *fakeClient) Run(user, host string, port int, command string) (string, error) {
 	*f.events = append(*f.events, "run:"+command)
+	target := hosts.Target{User: user, Host: host, Port: port}.String()
+	if err := f.runErrs[target]; err != nil {
+		return "", err
+	}
+	if result, ok := f.runResults[target]; ok {
+		return result, nil
+	}
 	return "ok", nil
 }
 
@@ -126,7 +135,46 @@ func TestRunWithConnectsBeforeReadingInput(t *testing.T) {
 	if commandRun <= inputRead {
 		t.Fatalf("command ran before input was read: %v", events)
 	}
+	if !strings.Contains(out.String(), "===== root@192.168.1.1:22 =====") {
+		t.Errorf("missing host separator: %q", out.String())
+	}
 	if !strings.Contains(out.String(), "root@192.168.1.1:22\tok") {
 		t.Errorf("unexpected command output: %q", out.String())
+	}
+}
+
+func TestReadCommandsSeparatesHosts(t *testing.T) {
+	targets := []hosts.Target{
+		{User: "root", Host: "192.168.1.1", Port: 22},
+		{User: "deploy", Host: "192.168.1.2", Port: 2222},
+		{User: "root", Host: "10.0.0.1", Port: 22},
+	}
+	events := []string{}
+	client := &fakeClient{
+		events: &events,
+		runResults: map[string]string{
+			"root@192.168.1.1:22":     "line1\nline2",
+			"deploy@192.168.1.2:2222": "only",
+		},
+		runErrs: map[string]error{
+			"root@10.0.0.1:22": errors.New("boom"),
+		},
+	}
+	var out, errOut bytes.Buffer
+	if err := readCommands(client, targets, strings.NewReader("df -h\nexit\n"), &out, &errOut); err != nil {
+		t.Fatalf("readCommands: %v", err)
+	}
+
+	want := "===== root@192.168.1.1:22 =====\n" +
+		"root@192.168.1.1:22\tline1\n" +
+		"root@192.168.1.1:22\tline2\n\n" +
+		"===== deploy@192.168.1.2:2222 =====\n" +
+		"deploy@192.168.1.2:2222\tonly\n\n" +
+		"===== root@10.0.0.1:22 =====\n\n"
+	if out.String() != want {
+		t.Errorf("stdout mismatch:\ngot:  %q\nwant: %q", out.String(), want)
+	}
+	if !strings.Contains(errOut.String(), "root@10.0.0.1:22\tERROR: boom") {
+		t.Errorf("missing error output: %q", errOut.String())
 	}
 }
